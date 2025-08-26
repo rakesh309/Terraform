@@ -1,0 +1,13 @@
+resource "oci_core_vcn" "lb_vcn" {
+  cidr_block     = "10.0.0.0/16"
+  compartment_id = "ocid1.tenancy.oc1..aaaaaaaaz7lkdcw3rjveeybdrejtohzqolph7tp6hfuhsoj2xnjgebvnho7a"
+  display_name   = "lb_vcn"
+}
+
+resource "oci_core_subnet" "lb_subnet" {
+  cidr_block     = "10.0.1.0/24"
+  compartment_id = "ocid1.tenancy.oc1..aaaaaaaaz7lkdcw3rjveeybdrejtohzqolph7tp6hfuhsoj2xnjgebvnho7a"
+  vcn_id         = oci_core_vcn.lb_vcn.id
+  display_name   = "lb_subnet"
+  # Add route table and security list associations as needed
+}

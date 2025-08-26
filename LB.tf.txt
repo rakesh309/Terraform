@@ -1,0 +1,7 @@
+resource "oci_load_balancer_load_balancer" "my_lb" {
+  compartment_id = "ocid1.tenancy.oc1..aaaaaaaaz7lkdcw3rjveeybdrejtohzqolph7tp6hfuhsoj2xnjgebvnho7a"
+  display_name   = "my_application_lb"
+  shape          = "10Mbps" # Or "flexible" for flexible shapes
+  subnet_ids     = [oci_core_subnet.lb_subnet.id]
+  is_private     = false # Set to true for a private load balancer
+}
