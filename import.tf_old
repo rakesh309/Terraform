@@ -1,0 +1,7 @@
+
+import {
+    id = "ocid1.instance.oc1.ap-mumbai-1.anrg6ljryko2csqckblakywxery2v6bdrjmgigwd6usfmuq6jdclqvnjonwa"
+    to = oci_core_instance.demo_inst_1
+}
+
+

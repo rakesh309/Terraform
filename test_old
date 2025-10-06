@@ -1,0 +1,19 @@
+# Add this to your terraform configuration
+resource "oci_core_instance" "demo_inst_1" {
+  # Include minimal required attributes
+  # You'll need to fill these in based on your OCI instance
+  compartment_id      = "your-compartment-ocid"
+  availability_domain = "your-availability-domain"
+  shape               = "your-instance-shape"
+  
+  source_details {
+    source_type = "image"
+    source_id   = "your-image-ocid"
+  }
+  
+  create_vnic_details {
+    subnet_id = "your-subnet-ocid"
+  }
+  
+  # Add other attributes as needed
+}
