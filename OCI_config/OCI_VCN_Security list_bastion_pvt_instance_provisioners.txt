@@ -1,0 +1,273 @@
+# main.tf - OCI
+terraform {
+  required_providers {
+    oci = {
+      source  = "oracle/oci"
+      version = "~>5.0"
+    }
+  }
+}
+
+provider "oci" {
+  region = var.region
+}
+
+# Compartment
+variable "compartment_id" {
+  description = "OCI Compartment OCID"
+  type        = string
+}
+
+variable "region" {
+  description = "OCI Region"
+  default     = "us-ashburn-1"
+}
+
+# VCN
+resource "oci_core_vcn" "main" {
+  compartment_id = var.compartment_id
+  cidr_block     = "10.0.0.0/16"
+  display_name   = "vcn-main"
+}
+
+# Public Subnet
+resource "oci_core_subnet" "public" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.main.id
+  cidr_block     = "10.0.1.0/24"
+  display_name   = "snet-public"
+  
+  prohibit_public_ip_on_vnic = false
+  route_table_id             = oci_core_route_table.public.id
+  security_list_ids          = [oci_core_security_list.public.id]
+}
+
+# Private Subnet
+resource "oci_core_subnet" "private" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.main.id
+  cidr_block     = "10.0.2.0/24"
+  display_name   = "snet-private"
+  
+  prohibit_public_ip_on_vnic = true
+  route_table_id             = oci_core_route_table.private.id
+  security_list_ids          = [oci_core_security_list.private.id]
+}
+
+# Internet Gateway
+resource "oci_core_internet_gateway" "main" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.main.id
+  display_name   = "igw-main"
+}
+
+# NAT Gateway (for private instances to access internet)
+resource "oci_core_nat_gateway" "main" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.main.id
+  display_name   = "nat-main"
+}
+
+# Route Table for Public Subnet
+resource "oci_core_route_table" "public" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.main.id
+  display_name   = "rt-public"
+
+  route_rules {
+    destination       = "0.0.0.0/0"
+    destination_type  = "CIDR_BLOCK"
+    network_entity_id = oci_core_internet_gateway.main.id
+  }
+}
+
+# Route Table for Private Subnet
+resource "oci_core_route_table" "private" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.main.id
+  display_name   = "rt-private"
+
+  route_rules {
+    destination       = "0.0.0.0/0"
+    destination_type  = "CIDR_BLOCK"
+    network_entity_id = oci_core_nat_gateway.main.id
+  }
+}
+
+# Security List for Private Subnet
+resource "oci_core_security_list" "private" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.main.id
+  display_name   = "sl-private"
+
+  ingress_security_rules {
+    protocol    = "6" # TCP
+    source      = "10.0.1.0/24" # Public subnet
+    source_type = "CIDR_BLOCK"
+    
+    tcp_options {
+      min = 22
+      max = 22
+    }
+  }
+
+  egress_security_rules {
+    protocol         = "6"
+    destination      = "0.0.0.0/0"
+    destination_type = "CIDR_BLOCK"
+    
+    tcp_options {
+      min = 80
+      max = 80
+    }
+  }
+
+  egress_security_rules {
+    protocol         = "6"
+    destination      = "0.0.0.0/0"
+    destination_type = "CIDR_BLOCK"
+    
+    tcp_options {
+      min = 443
+      max = 443
+    }
+  }
+}
+
+# Security List for Public Subnet
+resource "oci_core_security_list" "public" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.main.id
+  display_name   = "sl-public"
+
+  ingress_security_rules {
+    protocol    = "6"
+    source      = "0.0.0.0/0"
+    source_type = "CIDR_BLOCK"
+    
+    tcp_options {
+      min = 22
+      max = 22
+    }
+  }
+
+  egress_security_rules {
+    protocol         = "6"
+    destination      = "0.0.0.0/0"
+    destination_type = "CIDR_BLOCK"
+    
+    tcp_options {
+      min = 80
+      max = 80
+    }
+  }
+
+  egress_security_rules {
+    protocol         = "6"
+    destination      = "0.0.0.0/0"
+    destination_type = "CIDR_BLOCK"
+    
+    tcp_options {
+      min = 443
+      max = 443
+    }
+  }
+}
+
+# Bastion Instance in Public Subnet
+resource "oci_core_instance" "bastion" {
+  compartment_id      = var.compartment_id
+  availability_domain = data.oci_identity_availability_domain.ad.name
+  shape               = "VM.Standard.E2.1.Micro"
+  display_name        = "bastion-host"
+
+  source_details {
+    source_type = "image"
+    source_id   = data.oci_core_images.linux.images[0].id
+  }
+
+  create_vnic_details {
+    subnet_id        = oci_core_subnet.public.id
+    assign_public_ip = true
+    hostname_label   = "bastion"
+  }
+
+  metadata = {
+    ssh_authorized_keys = file("~/.ssh/id_rsa.pub")
+  }
+
+  preserve_boot_volume = false
+}
+
+# Private Instance
+resource "oci_core_instance" "private" {
+  compartment_id      = var.compartment_id
+  availability_domain = data.oci_identity_availability_domain.ad.name
+  shape               = "VM.Standard.E2.1.Micro"
+  display_name        = "private-instance"
+
+  source_details {
+    source_type = "image"
+    source_id   = data.oci_core_images.linux.images[0].id
+  }
+
+  create_vnic_details {
+    subnet_id        = oci_core_subnet.private.id
+    assign_public_ip = false
+    hostname_label   = "private"
+  }
+
+  metadata = {
+    ssh_authorized_keys = file("~/.ssh/id_rsa.pub")
+  }
+
+  preserve_boot_volume = false
+}
+
+# Data sources
+data "oci_identity_availability_domain" "ad" {
+  compartment_id = var.compartment_id
+  ad_number      = 1
+}
+
+data "oci_core_images" "linux" {
+  compartment_id           = var.compartment_id
+  operating_system         = "Oracle Linux"
+  operating_system_version = "8"
+  shape                    = "VM.Standard.E2.1.Micro"
+}
+
+# Provisioner using OCI Bastion Host
+resource "null_resource" "provision_private_instance" {
+  triggers = {
+    instance_id = oci_core_instance.private.id
+    script_hash = filesha256("${path.module}/scripts/provision.sh")
+  }
+
+  connection {
+    type        = "ssh"
+    user        = "opc"
+    private_key = file("~/.ssh/id_rsa")
+    host        = oci_core_instance.private.private_ip
+    bastion_host = oci_core_instance.bastion.public_ip
+    bastion_user = "opc"
+    bastion_private_key = file("~/.ssh/id_rsa")
+  }
+
+  provisioner "file" {
+    source      = "scripts/provision.sh"
+    destination = "/tmp/provision.sh"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "chmod +x /tmp/provision.sh",
+      "sudo /tmp/provision.sh"
+    ]
+  }
+
+  depends_on = [
+    oci_core_instance.private,
+    oci_core_instance.bastion
+  ]
+}
