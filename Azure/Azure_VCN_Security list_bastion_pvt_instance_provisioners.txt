@@ -1,0 +1,175 @@
+# main.tf - Azure
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~>3.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+}
+
+# Resource Group
+resource "azurerm_resource_group" "main" {
+  name     = "rg-bastion-example"
+  location = "East US"
+}
+
+# Virtual Network
+resource "azurerm_virtual_network" "main" {
+  name                = "vnet-main"
+  address_space       = ["10.0.0.0/16"]
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+}
+
+# Public Subnet
+resource "azurerm_subnet" "public" {
+  name                 = "snet-public"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = ["10.0.1.0/24"]
+}
+
+# Private Subnet
+resource "azurerm_subnet" "private" {
+  name                 = "snet-private"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = ["10.0.2.0/24"]
+}
+
+# AzureBastionSubnet (Required for Azure Bastion)
+resource "azurerm_subnet" "bastion" {
+  name                 = "AzureBastionSubnet"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = ["10.0.3.0/26"]
+}
+
+# Public IP for Bastion
+resource "azurerm_public_ip" "bastion" {
+  name                = "pip-bastion"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+}
+
+# Azure Bastion Service
+resource "azurerm_bastion_host" "main" {
+  name                = "bastion-main"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+
+  ip_configuration {
+    name                 = "configuration"
+    subnet_id            = azurerm_subnet.bastion.id
+    public_ip_address_id = azurerm_public_ip.bastion.id
+  }
+}
+
+# Network Security Group for Private VM
+resource "azurerm_network_security_group" "private" {
+  name                = "nsg-private"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+
+  security_rule {
+    name                       = "allow-ssh-from-bastion"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = "10.0.3.0/26" # Bastion subnet
+    destination_address_prefix = "*"
+  }
+}
+
+# Network Interface for Private VM
+resource "azurerm_network_interface" "private" {
+  name                = "nic-private-vm"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.private.id
+    private_ip_address_allocation = "Dynamic"
+  }
+}
+
+# Associate NSG with NIC
+resource "azurerm_network_interface_security_group_association" "private" {
+  network_interface_id      = azurerm_network_interface.private.id
+  network_security_group_id = azurerm_network_security_group.private.id
+}
+
+# Linux Virtual Machine in Private Subnet
+resource "azurerm_linux_virtual_machine" "private" {
+  name                = "vm-private"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = "Standard_B1s"
+  admin_username      = "adminuser"
+  network_interface_ids = [
+    azurerm_network_interface.private.id,
+  ]
+
+  admin_ssh_key {
+    username   = "adminuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+}
+
+# Provisioner using Azure Bastion
+resource "null_resource" "provision_private_vm" {
+  triggers = {
+    vm_id       = azurerm_linux_virtual_machine.private.id
+    script_hash = filesha256("${path.module}/scripts/provision.sh")
+  }
+
+  connection {
+    type        = "ssh"
+    user        = "adminuser"
+    private_key = file("~/.ssh/id_rsa")
+    host        = azurerm_linux_virtual_machine.private.private_ip_address
+    bastion_host = azurerm_public_ip.bastion.ip_address
+    bastion_user = "adminuser"
+    bastion_private_key = file("~/.ssh/id_rsa")
+  }
+
+  provisioner "file" {
+    source      = "scripts/provision.sh"
+    destination = "/tmp/provision.sh"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "chmod +x /tmp/provision.sh",
+      "sudo /tmp/provision.sh"
+    ]
+  }
+
+  depends_on = [
+    azurerm_linux_virtual_machine.private,
+    azurerm_bastion_host.main
+  ]
+}
